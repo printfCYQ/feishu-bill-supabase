@@ -1,0 +1,39 @@
+# Supabase CLI Configuration
+
+[api]
+enabled = true
+
+[auth]
+enabled = true
+
+[functions.hello_world]
+enabled = true
+verify_jwt = false
+import_map = "./functions/hello_world/deno.json"
+entrypoint = "./functions/hello_world/index.ts"
+
+[functions.test_auth]
+enabled = true
+verify_jwt = true
+import_map = "./functions/test_auth/deno.json"
+entrypoint = "./functions/test_auth/index.ts"
+
+[functions.feishu_login]
+enabled = true
+verify_jwt = false
+import_map = "./functions/feishu_login/deno.json"
+entrypoint = "./functions/feishu_login/index.ts"
+
+[functions.api_categories]
+enabled = true
+verify_jwt = true
+import_map = "./functions/api_categories/deno.json"
+entrypoint = "./functions/api_categories/index.ts"
+
+[functions.api_records]
+enabled = true
+verify_jwt = true
+import_map = "./functions/api_records/deno.json"
+entrypoint = "./functions/api_records/index.ts"
+
+

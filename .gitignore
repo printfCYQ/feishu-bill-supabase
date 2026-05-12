@@ -1,0 +1,32 @@
+# Supabase CLI directories
+.temp/
+.branches/
+
+# Local environment variables (contains secrets!)
+.env.local
+.env
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Log files
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+.build/
+.output/
+
+# Deno cache (if using Deno locally)
+deno.lock
+node_modules/
+
+# Supabase Studio local data
+.studio/
