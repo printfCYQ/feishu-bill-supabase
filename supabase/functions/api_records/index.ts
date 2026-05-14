@@ -357,6 +357,90 @@ serve(async (req) => {
         }, 400)
       }
 
+      const action = url.searchParams.get('action')
+      
+      if (action === 'batch') {
+        const { records } = body
+        if (!Array.isArray(records) || records.length === 0) {
+          return jsonResponse({
+            code: -1,
+            message: '缺少必要参数: records (数组)'
+          }, 400)
+        }
+
+        const errors: string[] = []
+        const validRecords: any[] = []
+
+        // 验证记录并准备数据
+        for (const record of records) {
+          const { amount, type, category_id, category_name, note, created_at } = record
+          
+          if (!amount || !type || !category_id || !category_name) {
+            errors.push(`记录缺少必要参数: ${JSON.stringify(record)}`)
+            continue
+          }
+
+          const createdAt = created_at ? parseInt(created_at) : Date.now()
+          
+          validRecords.push({
+            fields: {
+              user_id: auth.open_id || '',
+              amount: parseFloat(amount),
+              type,
+              category_id,
+              category_name,
+              note: note || '',
+              created_at: createdAt
+            }
+          })
+        }
+
+        if (validRecords.length === 0) {
+          return jsonResponse({
+            code: -1,
+            message: '没有可导入的记录',
+            data: { success_count: 0, error_count: errors.length, results: [], errors }
+          }, 400)
+        }
+
+        try {
+          // 使用飞书批量创建接口
+          const data = await feishuRequest(
+            'POST',
+            `/bitable/v1/apps/${FEISHU_APP_TOKEN}/tables/${FEISHU_TABLE_RECORDS}/records/batch_create`,
+            { records: validRecords }
+          )
+
+          const createdRecords = (data.records || []).map((record: any, index: number) => ({
+            record_id: record.record_id,
+            user_id: validRecords[index].fields.user_id,
+            amount: validRecords[index].fields.amount,
+            type: validRecords[index].fields.type,
+            category_id: validRecords[index].fields.category_id,
+            category_name: validRecords[index].fields.category_name,
+            note: validRecords[index].fields.note,
+            created_at: validRecords[index].fields.created_at
+          }))
+
+          return jsonResponse({
+            code: 0,
+            message: '批量创建完成',
+            data: {
+              success_count: createdRecords.length,
+              error_count: errors.length,
+              results: createdRecords,
+              errors
+            }
+          }, 201)
+        } catch (e) {
+          return jsonResponse({
+            code: -1,
+            message: `批量创建失败: ${e.message}`,
+            data: { success_count: 0, error_count: validRecords.length + errors.length, results: [], errors: [`${e.message}`] }
+          }, 500)
+        }
+      }
+
       const { amount, type, category_id, category_name, note, created_at } = body
       if (!amount || !type || !category_id || !category_name) {
         return jsonResponse({
@@ -365,7 +449,6 @@ serve(async (req) => {
         }, 400)
       }
 
-      const recordId = crypto.randomUUID()
       const createdAt = created_at ? parseInt(created_at) : Date.now()
 
       const data = await feishuRequest(
@@ -373,7 +456,6 @@ serve(async (req) => {
         `/bitable/v1/apps/${FEISHU_APP_TOKEN}/tables/${FEISHU_TABLE_RECORDS}/records`,
         {
           fields: {
-            id: recordId,
             user_id: auth.open_id || '',
             amount: parseFloat(amount),
             type,
@@ -390,7 +472,6 @@ serve(async (req) => {
         message: '创建成功',
         data: {
           record_id: data.record.record_id,
-          id: recordId,
           user_id: auth.open_id || null,
           amount: parseFloat(amount),
           type,
