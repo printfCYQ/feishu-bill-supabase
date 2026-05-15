@@ -56,7 +56,12 @@ serve(async (req) => {
         message: 'success',
         data: {
           authenticated: true,
-          token_present: true
+          token_present: true,
+          env_status: {
+            FEISHU_APP_ID: Deno.env.get('FEISHU_APP_ID') ? '已设置' : '未设置',
+            FEISHU_APP_SECRET: Deno.env.get('FEISHU_APP_SECRET') ? '已设置' : '未设置',
+            SUPABASE_URL: Deno.env.get('SUPABASE_URL') ? '已设置' : '未设置'
+          }
         }
       }), {
         headers: { 
