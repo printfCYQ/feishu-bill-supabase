@@ -91,7 +91,7 @@ async function feishuRequest(method: string, path: string, body?: unknown): Prom
   const token = await getFeishuToken()
 
   console.log('feishuRequest called:', { method, path })
-  if (body) console.log('feishuRequest body:', body)
+  if (body) console.log('feishuRequest body:', JSON.stringify(body).substring(0, 200))
 
   const response = await fetch(`https://open.feishu.cn/open-apis${path}`, {
     method,
@@ -103,7 +103,7 @@ async function feishuRequest(method: string, path: string, body?: unknown): Prom
   })
 
   const data = await response.json()
-  console.log('feishuRequest response:', JSON.stringify(data))
+  console.log('feishuRequest response:', JSON.stringify(data).substring(0, 200))
 
   if (data.code !== 0) {
     console.error('feishuRequest error:', data)
@@ -192,7 +192,6 @@ function jsonResponse(data: any, status = 200): Response {
   })
 }
 
-// Handler 函数定义
 async function handleGetSingleRecord(record_id: string): Promise<Response> {
   console.log('handleGetSingleRecord called:', record_id)
   const data = await feishuRequest(
@@ -278,6 +277,7 @@ async function handleChartsSummary(
     })
     
     monthData.push({
+      year: yearNum,
       month: m,
       total_income: monthIncome,
       total_expense: monthExpense,
@@ -301,6 +301,44 @@ async function handleChartsSummary(
     .sort((a, b) => b.expense - a.expense)
     .slice(0, 5)
   
+  // 直接统计指定年份的所有账单，避免累加精度问题
+  let yearTotalIncome = 0
+  let yearTotalExpense = 0
+  const yearCategoryStats: Record<string, { income: number; expense: number }> = {}
+  
+  // 先筛选出指定年份的数据
+  const yearStart = new Date(yearNum, 0, 1).getTime() - TZ_OFFSET
+  const yearEnd = new Date(yearNum, 11, 31, 23, 59, 59, 999).getTime() - TZ_OFFSET
+  
+  const yearItems = filteredItems.filter((item: any) => {
+    const createdAt = parseTimestamp(item.fields.created_at)
+    return createdAt >= yearStart && createdAt <= yearEnd
+  })
+  
+  yearItems.forEach((item: any) => {
+    const amount = parseFloat(item.fields.amount) || 0
+    const itemType = normalizeType(item.fields.type || '')
+    const categoryName = item.fields.category_name || '其他'
+    
+    if (!yearCategoryStats[categoryName]) {
+      yearCategoryStats[categoryName] = { income: 0, expense: 0 }
+    }
+    
+    if (itemType === 'income') {
+      yearTotalIncome = add(yearTotalIncome, amount)
+      yearCategoryStats[categoryName].income = add(yearCategoryStats[categoryName].income, amount)
+    } else {
+      yearTotalExpense = add(yearTotalExpense, amount)
+      yearCategoryStats[categoryName].expense = add(yearCategoryStats[categoryName].expense, amount)
+    }
+  })
+  
+  const yearTopCategories = Object.entries(yearCategoryStats)
+    .map(([name, stats]: [string, any]) => ({ name, expense: stats.expense }))
+    .filter((item) => item.expense > 0)
+    .sort((a, b) => b.expense - a.expense)
+    .slice(0, 5)
+  
   return jsonResponse({
     code: 0,
     message: 'success',
@@ -314,7 +352,176 @@ async function handleChartsSummary(
         category_stats: currentMonthData.category_stats,
         top_categories: topCategories
       },
+      year_total: {
+        total_income: yearTotalIncome,
+        total_expense: yearTotalExpense,
+        balance: sub(yearTotalIncome, yearTotalExpense),
+        category_stats: yearCategoryStats,
+        top_categories: yearTopCategories
+      },
       year_months: monthData
+    }
+  })
+}
+
+async function handleAllSummary(
+  user_id: string | null, 
+  authOpenId: string | undefined
+): Promise<Response> {
+  console.log('handleAllSummary called')
+  
+  const TZ_OFFSET = 8 * 60 * 60 * 1000 // 东八区
+  const items = await getAllRecords(FEISHU_APP_TOKEN, FEISHU_TABLE_RECORDS)
+  
+  let filteredItems = items.filter((item: any) => {
+    const itemUserId = item.fields.user_id || ''
+    return (!user_id || itemUserId === user_id || (!itemUserId && authOpenId))
+  })
+
+  const yearMonthData: Record<string, any> = {}
+  const categoryStats: Record<string, { income: number; expense: number }> = {}
+  let totalIncome = 0
+  let totalExpense = 0
+
+  filteredItems.forEach((item: any) => {
+    const createdAt = parseTimestamp(item.fields.created_at)
+    if (!createdAt) return
+    
+    // 使用东八区时间获取年月
+    const localDate = new Date(createdAt + TZ_OFFSET)
+    const year = localDate.getUTCFullYear()
+    const month = localDate.getUTCMonth() + 1
+    const key = `${year}-${month.toString().padStart(2, '0')}`
+    
+    const amount = parseFloat(item.fields.amount) || 0
+    const itemType = normalizeType(item.fields.type || '')
+    const categoryName = item.fields.category_name || '其他'
+    
+    if (!yearMonthData[key]) {
+      yearMonthData[key] = {
+        year,
+        month,
+        total_income: 0,
+        total_expense: 0,
+        balance: 0,
+        category_stats: {}
+      }
+    }
+    
+    if (!yearMonthData[key].category_stats[categoryName]) {
+      yearMonthData[key].category_stats[categoryName] = { income: 0, expense: 0 }
+    }
+    
+    if (!categoryStats[categoryName]) {
+      categoryStats[categoryName] = { income: 0, expense: 0 }
+    }
+    
+    if (itemType === 'income') {
+      totalIncome = add(totalIncome, amount)
+      yearMonthData[key].total_income = add(yearMonthData[key].total_income, amount)
+      yearMonthData[key].category_stats[categoryName].income = add(yearMonthData[key].category_stats[categoryName].income, amount)
+      categoryStats[categoryName].income = add(categoryStats[categoryName].income, amount)
+    } else {
+      totalExpense = add(totalExpense, amount)
+      yearMonthData[key].total_expense = add(yearMonthData[key].total_expense, amount)
+      yearMonthData[key].category_stats[categoryName].expense = add(yearMonthData[key].category_stats[categoryName].expense, amount)
+      categoryStats[categoryName].expense = add(categoryStats[categoryName].expense, amount)
+    }
+    
+    yearMonthData[key].balance = sub(yearMonthData[key].total_income, yearMonthData[key].total_expense)
+  })
+
+  const yearMonths = Object.values(yearMonthData).sort((a: any, b: any) => {
+    if (a.year !== b.year) return a.year - b.year
+    return a.month - b.month
+  })
+
+  const topCategories = Object.entries(categoryStats)
+    .map(([name, stats]) => ({ name, expense: stats.expense }))
+    .filter((item) => item.expense > 0)
+    .sort((a, b) => b.expense - a.expense)
+    .slice(0, 5)
+
+  // 按年份聚合数据 - 直接从原始数据统计，避免累加精度问题
+  const yearData: Record<number, { year: number; total_income: number; total_expense: number; balance: number }> = {}
+  
+  filteredItems.forEach((item: any) => {
+    const createdAt = parseTimestamp(item.fields.created_at)
+    if (!createdAt) return
+    
+    const localDate = new Date(createdAt + TZ_OFFSET)
+    const year = localDate.getUTCFullYear()
+    const amount = parseFloat(item.fields.amount) || 0
+    const itemType = normalizeType(item.fields.type || '')
+    
+    if (!yearData[year]) {
+      yearData[year] = {
+        year,
+        total_income: 0,
+        total_expense: 0,
+        balance: 0
+      }
+    }
+    
+    if (itemType === 'income') {
+      yearData[year].total_income = add(yearData[year].total_income, amount)
+    } else {
+      yearData[year].total_expense = add(yearData[year].total_expense, amount)
+    }
+  })
+  
+  // 计算每年的 balance
+  Object.values(yearData).forEach(y => {
+    y.balance = sub(y.total_income, y.total_expense)
+  })
+
+  const years = Object.values(yearData).sort((a, b) => a.year - b.year)
+
+  // 计算累计趋势（按年份）- 直接从原始数据统计
+  const sortedYears = [...years].map(y => y.year).sort((a, b) => a - b)
+  const cumulativeData: { year: number; cumulative_income: number; cumulative_expense: number }[] = []
+  
+  let totalCumIncome = 0
+  let totalCumExpense = 0
+  
+  sortedYears.forEach(year => {
+    const yearStart = new Date(year, 0, 1).getTime() - TZ_OFFSET
+    const yearEnd = new Date(year, 11, 31, 23, 59, 59, 999).getTime() - TZ_OFFSET
+    
+    filteredItems.forEach((item: any) => {
+      const createdAt = parseTimestamp(item.fields.created_at)
+      if (!createdAt || createdAt < yearStart || createdAt > yearEnd) return
+      
+      const amount = parseFloat(item.fields.amount) || 0
+      const itemType = normalizeType(item.fields.type || '')
+      
+      if (itemType === 'income') {
+        totalCumIncome = add(totalCumIncome, amount)
+      } else {
+        totalCumExpense = add(totalCumExpense, amount)
+      }
+    })
+    
+    cumulativeData.push({
+      year,
+      cumulative_income: totalCumIncome,
+      cumulative_expense: totalCumExpense
+    })
+  })
+
+  return jsonResponse({
+    code: 0,
+    message: 'success',
+    data: {
+      total_income: totalIncome,
+      total_expense: totalExpense,
+      balance: sub(totalIncome, totalExpense),
+      total_records: filteredItems.length,
+      top_categories: topCategories,
+      year_months: yearMonths,
+      category_stats: categoryStats,
+      years: years,
+      cumulative_years: cumulativeData
     }
   })
 }
@@ -399,6 +606,12 @@ async function handleGetRecordList(
   const amount_min = url.searchParams.get('amount_min')
   const amount_max = url.searchParams.get('amount_max')
   const category_id = url.searchParams.get('category_id')
+  const page = parseInt(url.searchParams.get('page') || '1')
+  const pageSize = parseInt(url.searchParams.get('pageSize') || '50')
+  const sortBy = url.searchParams.get('sortBy') || 'created_at'
+  const sortOrder = url.searchParams.get('sortOrder') || 'desc'
+  const category_ids = url.searchParams.get('category_ids')
+  const include_stats = url.searchParams.get('include_stats') === 'true'
 
   const TZ_OFFSET = 8 * 60 * 60 * 1000
   const items = await getAllRecords(FEISHU_APP_TOKEN, FEISHU_TABLE_RECORDS)
@@ -421,6 +634,11 @@ async function handleGetRecordList(
 
   if (category_id) {
     records = records.filter((r: any) => r.category_id === category_id)
+  }
+  
+  if (category_ids) {
+    const ids = category_ids.split(',')
+    records = records.filter((r: any) => ids.includes(r.category_id))
   }
 
   if (user_id) {
@@ -454,10 +672,57 @@ async function handleGetRecordList(
     records = records.filter((r: any) => r.amount >= min && r.amount <= max)
   }
 
+  records.sort((a: any, b: any) => {
+    let valA = a[sortBy]
+    let valB = b[sortBy]
+    
+    if (sortBy === 'created_at') {
+      valA = a.created_at
+      valB = b.created_at
+    } else if (sortBy === 'amount') {
+      valA = a.amount
+      valB = b.amount
+    }
+    
+    if (sortOrder === 'asc') {
+      return valA > valB ? 1 : -1
+    } else {
+      return valA < valB ? 1 : -1
+    }
+  })
+
+  const total = records.length
+  const start = (page - 1) * pageSize
+  const end = start + pageSize
+  const paginatedRecords = records.slice(start, end)
+
+  const result: any = {
+    records: paginatedRecords,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(total / pageSize)
+  }
+
+  if (include_stats) {
+    let totalIncome = 0
+    let totalExpense = 0
+    records.forEach((r: any) => {
+      if (r.type === 'income') {
+        totalIncome = add(totalIncome, r.amount)
+      } else {
+        totalExpense = add(totalExpense, r.amount)
+      }
+    })
+    result.totalIncome = totalIncome
+    result.totalExpense = totalExpense
+    result.balance = sub(totalIncome, totalExpense)
+  }
+
   return jsonResponse({
     code: 0,
     message: 'success',
-    data: records
+    data: result
   })
 }
 
@@ -479,22 +744,31 @@ async function handleBatchCreate(
   const validRecords: any[] = []
 
   for (const record of records) {
-    const { amount, type, category_id, category_name, note, created_at } = record
+    const { id, amount, type, category_id, category_name, note, created_at } = record
     
-    if (!amount || !type || !category_id || !category_name) {
+    if (!amount || !type) {
       errors.push(`记录缺少必要参数: ${JSON.stringify(record)}`)
       continue
     }
 
+    if (!category_id && !category_name) {
+      errors.push(`记录缺少分类信息 (category_id 或 category_name): ${JSON.stringify(record)}`)
+      continue
+    }
+
     const createdAt = created_at ? parseInt(created_at) : Date.now()
+    const resolvedCategoryId = category_id || ''
+    const resolvedCategoryName = category_name || ''
+    const resolvedId = id || crypto.randomUUID()
     
     validRecords.push({
       fields: {
         user_id: authOpenId || '',
+        id: resolvedId,
         amount: parseFloat(amount),
         type,
-        category_id,
-        category_name,
+        category_id: resolvedCategoryId,
+        category_name: resolvedCategoryName,
         note: note || '',
         created_at: createdAt
       }
@@ -505,43 +779,134 @@ async function handleBatchCreate(
     return jsonResponse({
       code: -1,
       message: '没有可导入的记录',
-      data: { success_count: 0, error_count: errors.length, results: [], errors }
+      data: { success_count: 0, error_count: errors.length, duplicate_count: 0, results: [], errors }
     }, 400)
   }
 
-  try {
-    const data = await feishuRequest(
-      'POST',
-      `/bitable/v1/apps/${FEISHU_APP_TOKEN}/tables/${FEISHU_TABLE_RECORDS}/records/batch_create`,
-      { records: validRecords }
+  console.log('正在获取已存在的记录进行去重检查...')
+  const existingRecords = await getAllRecords(FEISHU_APP_TOKEN, FEISHU_TABLE_RECORDS)
+  const existingRecordKeys = new Set(
+    existingRecords.map((record: any) => 
+      `${record.fields.amount}_${record.fields.type}_${record.fields.category_name || ''}_${record.fields.created_at}`
     )
+  )
+  console.log(`已存在 ${existingRecords.length} 条记录，已构建去重 Set`)
 
-    const createdRecords = (data.records || []).map((record: any, index: number) => ({
-      record_id: record.record_id,
-      user_id: validRecords[index].fields.user_id,
-      amount: validRecords[index].fields.amount,
-      type: validRecords[index].fields.type,
-      category_id: validRecords[index].fields.category_id,
-      category_name: validRecords[index].fields.category_name,
-      note: validRecords[index].fields.note,
-      created_at: validRecords[index].fields.created_at
-    }))
+  const newRecords: any[] = []
+  let duplicateCount = 0
+  for (const record of validRecords) {
+    const key = `${record.fields.amount}_${record.fields.type}_${record.fields.category_name || ''}_${record.fields.created_at}`
+    if (existingRecordKeys.has(key)) {
+      duplicateCount++
+      console.log(`跳过重复记录: ${key}`)
+    } else {
+      newRecords.push(record)
+    }
+  }
+  console.log(`去重完成：新增 ${newRecords.length} 条，跳过 ${duplicateCount} 条重复记录`)
+
+  if (newRecords.length === 0) {
+    return jsonResponse({
+      code: 0,
+      message: `没有新记录需要导入，跳过 ${duplicateCount} 条重复记录`,
+      data: {
+        success_count: 0,
+        error_count: errors.length,
+        duplicate_count: duplicateCount,
+        results: [],
+        errors
+      }
+    }, 200)
+  }
+
+  const BATCH_SIZE = 1000
+  const totalBatches = Math.ceil(newRecords.length / BATCH_SIZE)
+  console.log(`开始批量导入，共 ${newRecords.length} 条记录，分 ${totalBatches} 批上传`)
+
+  const allCreatedRecords: any[] = []
+  const allErrors: string[] = [...errors]
+  let successCount = 0
+  let errorCount = errors.length
+
+  try {
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const start = batchIndex * BATCH_SIZE
+      const end = Math.min(start + BATCH_SIZE, newRecords.length)
+      const batch = newRecords.slice(start, end)
+
+      console.log(`上传第 ${batchIndex + 1}/${totalBatches} 批 (${start + 1}-${end})`)
+
+      try {
+        const data = await feishuRequest(
+          'POST',
+          `/bitable/v1/apps/${FEISHU_APP_TOKEN}/tables/${FEISHU_TABLE_RECORDS}/records/batch_create`,
+          { records: batch }
+        )
+
+        const createdRecords = (data.records || []).map((record: any, index: number) => ({
+          record_id: record.record_id,
+          user_id: batch[index].fields.user_id,
+          amount: batch[index].fields.amount,
+          type: batch[index].fields.type,
+          category_id: batch[index].fields.category_id,
+          category_name: batch[index].fields.category_name,
+          note: batch[index].fields.note,
+          created_at: batch[index].fields.created_at
+        }))
+
+        allCreatedRecords.push(...createdRecords)
+        successCount += createdRecords.length
+
+        console.log(`第 ${batchIndex + 1} 批成功创建 ${createdRecords.length} 条记录`)
+      } catch (batchError: any) {
+        const errorMsg = `第 ${batchIndex + 1} 批失败: ${batchError.message}`
+        console.error(errorMsg)
+        allErrors.push(errorMsg)
+        errorCount += batch.length
+      }
+
+      if (batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+    }
+
+    if (successCount === 0 && errorCount > 0) {
+      return jsonResponse({
+        code: -1,
+        message: `批量创建失败：${allErrors.length} 条记录导入失败，跳过 ${duplicateCount} 条重复记录`,
+        data: {
+          success_count: 0,
+          error_count: errorCount,
+          duplicate_count: duplicateCount,
+          results: [],
+          errors: allErrors.slice(0, 10)
+        }
+      }, 500)
+    }
 
     return jsonResponse({
       code: 0,
-      message: '批量创建完成',
+      message: `批量创建完成：成功 ${successCount} 条，失败 ${errorCount} 条，跳过 ${duplicateCount} 条重复记录`,
       data: {
-        success_count: createdRecords.length,
-        error_count: errors.length,
-        results: createdRecords,
-        errors
+        success_count: successCount,
+        error_count: errorCount,
+        duplicate_count: duplicateCount,
+        results: allCreatedRecords,
+        errors: allErrors
       }
     }, 201)
+
   } catch (e: any) {
     return jsonResponse({
       code: -1,
-      message: `批量创建失败: ${e.message}`,
-      data: { success_count: 0, error_count: validRecords.length + errors.length, results: [], errors: [`${e.message}`] }
+      message: `批量创建失败: ${e.message}，跳过 ${duplicateCount} 条重复记录`,
+      data: {
+        success_count: successCount,
+        error_count: errorCount,
+        duplicate_count: duplicateCount,
+        results: allCreatedRecords,
+        errors: [...allErrors, `${e.message}`]
+      }
     }, 500)
   }
 }
@@ -552,7 +917,7 @@ async function handleCreateRecord(
 ): Promise<Response> {
   console.log('handleCreateRecord called')
   
-  const { amount, type, category_id, category_name, note, created_at } = body
+  const { id, amount, type, category_id, category_name, note, created_at } = body
   if (!amount || !type || !category_id || !category_name) {
     return jsonResponse({
       code: -1,
@@ -561,6 +926,7 @@ async function handleCreateRecord(
   }
 
   const createdAt = created_at ? parseInt(created_at) : Date.now()
+  const resolvedId = id || crypto.randomUUID()
 
   const data = await feishuRequest(
     'POST',
@@ -568,6 +934,7 @@ async function handleCreateRecord(
     {
       fields: {
         user_id: authOpenId || '',
+        id: resolvedId,
         amount: parseFloat(amount),
         type,
         category_id,
@@ -583,6 +950,7 @@ async function handleCreateRecord(
     message: '创建成功',
     data: {
       record_id: data.record.record_id,
+      id: resolvedId,
       user_id: authOpenId || null,
       amount: parseFloat(amount),
       type,
@@ -665,22 +1033,9 @@ serve(async (req) => {
   }
 
   try {
-    // 检查必需的环境变量
-    if (!FEISHU_APP_ID || !FEISHU_APP_SECRET || !FEISHU_APP_TOKEN || !FEISHU_TABLE_RECORDS || !FEISHU_TABLE_CATEGORIES) {
-      console.error('Missing required environment variables')
-      return jsonResponse({
-        code: -1,
-        message: '服务器配置错误: 缺少必需的环境变量'
-      }, 500)
-    }
-
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      console.error('Missing Supabase environment variables')
-      return jsonResponse({
-        code: -1,
-        message: '服务器配置错误: 缺少 Supabase 配置'
-      }, 500)
-    }
+    console.log('=== 收到请求 ===')
+    console.log('Method:', req.method)
+    console.log('URL:', url.toString())
 
     const auth = await verifyUser(req)
 
@@ -715,6 +1070,8 @@ serve(async (req) => {
             return await handleChartsSummary(year, month, user_id, auth.open_id)
           case 'summary':
             return await handleSummary(year!, month!, user_id, auth.open_id)
+          case 'all_summary':
+            return await handleAllSummary(user_id, auth.open_id)
           default:
             return await handleGetRecordList(url, auth.open_id)
         }
