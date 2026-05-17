@@ -1,0 +1,15 @@
+{
+  "imports": {
+    "@supabase/functions-js": "jsr:@supabase/functions-js@^2",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2",
+    "decimal.js": "https://esm.sh/decimal.js@10.4.3",
+    "dayjs": "https://esm.sh/dayjs@1.11.10",
+    "cors": "./_shared/cors.ts",
+    "response": "./_shared/response.ts",
+    "feishu": "./_shared/feishu.ts",
+    "auth": "./_shared/auth.ts",
+    "utils": "./_shared/utils.ts",
+    "supabaseAdmin": "./_shared/supabaseAdmin.ts",
+    "supabaseClient": "./_shared/supabaseClient.ts"
+  }
+}

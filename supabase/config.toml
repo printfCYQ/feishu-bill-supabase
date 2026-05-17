@@ -35,5 +35,3 @@ enabled = true
 verify_jwt = true
 import_map = "./functions/api_records/deno.json"
 entrypoint = "./functions/api_records/index.ts"
-
-
